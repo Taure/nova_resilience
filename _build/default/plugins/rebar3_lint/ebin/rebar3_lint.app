@@ -1,0 +1,10 @@
+{application,rebar3_lint,
+             [{description,"Erlang linter - rebar3 plugin"},
+              {vsn,"5.0.1"},
+              {registered,[]},
+              {applications,[kernel,stdlib,elvis_core]},
+              {env,[]},
+              {modules,[rebar3_lint,rebar3_lint_prv]},
+              {licenses,["MIT"]},
+              {links,[{"GitHub",
+                       "https://github.com/project-fifo/rebar3_lint"}]}]}.

@@ -1,0 +1,11 @@
+{application, nova_resilience, [
+    {description, "Production-grade resilience patterns for Nova web framework"},
+    {vsn, "git"},
+    {registered, [nova_resilience_registry, nova_resilience_gate]},
+    {applications, [kernel, stdlib, telemetry, seki, nova]},
+    {mod, {nova_resilience_app, []}},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/Taure/nova_resilience"}]}
+]}.
