@@ -21,10 +21,23 @@ Execute ordered shutdown.
 3. Tear down dependencies in `shutdown_priority` order (ascending)
 4. Clean up seki primitives
 """.
+-define(SHUTDOWN_KEY, nova_resilience_shutdown_executed).
+
 -spec execute() -> ok.
 execute() ->
+    case persistent_term:get(?SHUTDOWN_KEY, false) of
+        true ->
+            ok;
+        false ->
+            persistent_term:put(?SHUTDOWN_KEY, true),
+            do_execute()
+    end.
+
+do_execute() ->
     Start = erlang:monotonic_time(millisecond),
-    telemetry:execute([nova_resilience, shutdown, start], #{system_time => erlang:system_time(millisecond)}, #{}),
+    telemetry:execute(
+        [nova_resilience, shutdown, start], #{system_time => erlang:system_time(millisecond)}, #{}
+    ),
 
     ?LOG_NOTICE(#{msg => <<"Resilience shutdown started">>}),
 
@@ -62,7 +75,9 @@ shutdown_by_priority(DrainTimeout) ->
         fun(Prio) ->
             Group = maps:get(Prio, Grouped),
             Names = [element(2, D) || D <- Group],
-            ?LOG_NOTICE(#{msg => <<"Shutting down priority group">>, priority => Prio, deps => Names}),
+            ?LOG_NOTICE(#{
+                msg => <<"Shutting down priority group">>, priority => Prio, deps => Names
+            }),
             shutdown_group(Group, DrainTimeout)
         end,
         Priorities
@@ -73,10 +88,11 @@ shutdown_group(Deps, DrainTimeout) ->
     lists:foreach(
         fun(Dep) ->
             case element(7, Dep) of
-                undefined -> ok;
+                undefined ->
+                    ok;
                 BulkheadName ->
                     ?LOG_INFO(#{msg => <<"Closing bulkhead">>, name => element(2, Dep)}),
-                    seki:delete_bulkhead(BulkheadName)
+                    _ = seki:delete_bulkhead(BulkheadName)
             end
         end,
         Deps
@@ -89,21 +105,30 @@ shutdown_group(Deps, DrainTimeout) ->
     lists:foreach(
         fun(Dep) ->
             Name = element(2, Dep),
-            case element(6, Dep) of
-                undefined -> ok;
-                BreakerName ->
-                    ?LOG_INFO(#{msg => <<"Deleting breaker">>, name => Name}),
-                    seki:delete_breaker(BreakerName)
-            end,
+            _ =
+                case element(6, Dep) of
+                    undefined ->
+                        ok;
+                    BreakerName ->
+                        ?LOG_INFO(#{msg => <<"Deleting breaker">>, name => Name}),
+                        seki:delete_breaker(BreakerName)
+                end,
             Adapter = element(4, Dep),
             AdapterConfig = element(5, Dep),
             case Adapter of
-                undefined -> ok;
+                undefined ->
+                    ok;
                 _ ->
-                    try Adapter:shutdown(AdapterConfig)
-                    catch C:R ->
-                        ?LOG_WARNING(#{msg => <<"Adapter shutdown error">>,
-                                       name => Name, class => C, reason => R})
+                    try
+                        Adapter:shutdown(AdapterConfig)
+                    catch
+                        C:R ->
+                            ?LOG_WARNING(#{
+                                msg => <<"Adapter shutdown error">>,
+                                name => Name,
+                                class => C,
+                                reason => R
+                            })
                     end
             end,
             seki_health:unregister_check(nova_resilience_health, Name),

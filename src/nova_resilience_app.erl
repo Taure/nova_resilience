@@ -4,6 +4,7 @@
 Application behaviour for nova_resilience.
 
 Starts the supervision tree containing the dependency registry and readiness gate.
+Shutdown is automatic via `prep_stop/1` — no manual calls needed.
 """.
 
 -behaviour(application).
@@ -15,6 +16,7 @@ start(_StartType, _StartArgs) ->
     nova_resilience_sup:start_link().
 
 prep_stop(State) ->
+    nova_resilience_shutdown:execute(),
     State.
 
 stop(_State) ->

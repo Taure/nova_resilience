@@ -75,33 +75,51 @@ status(Name) ->
 %%----------------------------------------------------------------------
 
 init([]) ->
-    Table = ets:new(?TABLE, [
-        named_table,
-        {keypos, #dep.name},
-        set,
-        public,
-        {read_concurrency, true}
-    ]),
+    Table =
+        case ets:whereis(?TABLE) of
+            undefined ->
+                ets:new(?TABLE, [
+                    named_table,
+                    {keypos, #dep.name},
+                    set,
+                    public,
+                    {read_concurrency, true}
+                ]);
+            Tid ->
+                ets:delete_all_objects(Tid),
+                Tid
+        end,
     Deps = application:get_env(nova_resilience, dependencies, []),
     VmChecks = application:get_env(nova_resilience, vm_checks, true),
     Interval = application:get_env(nova_resilience, health_check_interval, 10000),
+    %% Clean up any existing health process from previous run
+    catch seki:delete_health(?HEALTH_NAME),
     {ok, _} = seki:new_health(?HEALTH_NAME, #{
         vm_checks => VmChecks,
         check_interval => Interval
     }),
-    lists:foreach(fun(Config) -> provision_dep(Config) end, Deps),
-    nova_resilience_gate:deps_provisioned(),
-    {ok, #{table => Table}}.
+    case validate_and_provision_all(Deps) of
+        ok ->
+            nova_resilience_gate:deps_provisioned(),
+            {ok, #{table => Table}};
+        {error, Reasons} ->
+            ?LOG_ERROR(#{msg => <<"Invalid dependency config">>, errors => Reasons}),
+            {stop, {invalid_config, Reasons}}
+    end.
 
 handle_call({register, Name, Config}, _From, State) ->
-    case ets:lookup(?TABLE, Name) of
-        [_] ->
-            {reply, {error, already_registered}, State};
-        [] ->
-            case provision_dep(Config#{name => Name}) of
-                ok -> {reply, ok, State};
-                Error -> {reply, Error, State}
-            end
+    FullConfig = Config#{name => Name},
+    case nova_resilience_config:validate(FullConfig) of
+        ok ->
+            case ets:lookup(?TABLE, Name) of
+                [_] ->
+                    {reply, {error, already_registered}, State};
+                [] ->
+                    ok = provision_dep(FullConfig),
+                    {reply, ok, State}
+            end;
+        {error, Errors} ->
+            {reply, {error, {invalid_config, Errors}}, State}
     end;
 handle_call({unregister, Name}, _From, State) ->
     teardown_dep(Name),
@@ -116,12 +134,32 @@ handle_info(_Msg, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    seki:delete_health(?HEALTH_NAME),
+    persistent_term:erase(nova_resilience_shutdown_executed),
+    _ = seki:delete_health(?HEALTH_NAME),
     ok.
 
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+validate_and_provision_all(Deps) ->
+    Errors = lists:foldl(
+        fun(Config, Acc) ->
+            case nova_resilience_config:validate(Config) of
+                ok -> Acc;
+                {error, Errs} -> [{maps:get(name, Config, unknown), Errs} | Acc]
+            end
+        end,
+        [],
+        Deps
+    ),
+    case Errors of
+        [] ->
+            lists:foreach(fun(Config) -> provision_dep(Config) end, Deps),
+            ok;
+        _ ->
+            {error, Errors}
+    end.
 
 provision_dep(Config) ->
     Name = maps:get(name, Config),
@@ -224,16 +262,25 @@ teardown_dep(Name) ->
             ok
     end.
 
-teardown_breaker(undefined) -> ok;
-teardown_breaker(Name) -> seki:delete_breaker(Name).
+teardown_breaker(undefined) ->
+    ok;
+teardown_breaker(Name) ->
+    _ = seki:delete_breaker(Name),
+    ok.
 
-teardown_bulkhead(undefined) -> ok;
-teardown_bulkhead(Name) -> seki:delete_bulkhead(Name).
+teardown_bulkhead(undefined) ->
+    ok;
+teardown_bulkhead(Name) ->
+    _ = seki:delete_bulkhead(Name),
+    ok.
 
-teardown_adapter(undefined, _Config) -> ok;
+teardown_adapter(undefined, _Config) ->
+    ok;
 teardown_adapter(Adapter, Config) ->
-    try Adapter:shutdown(Config)
-    catch _:_ -> ok
+    try
+        Adapter:shutdown(Config)
+    catch
+        _:_ -> ok
     end.
 
 resolve_adapter(#{adapter := Adapter}) when is_atom(Adapter), Adapter =/= undefined ->
@@ -256,17 +303,23 @@ breaker_name(DepName) ->
 bulkhead_name(DepName) ->
     list_to_atom("nova_res_bulkhead_" ++ atom_to_list(DepName)).
 
-dep_to_map(#dep{name = Name, type = Type, critical = Critical,
-                shutdown_priority = Prio}) ->
+dep_to_map(#dep{
+    name = Name,
+    type = Type,
+    critical = Critical,
+    shutdown_priority = Prio
+}) ->
     #{name => Name, type => Type, critical => Critical, shutdown_priority => Prio}.
 
 build_status(#dep{name = Name, breaker_name = BreakerName, bulkhead_name = BulkheadName}) ->
-    BreakerState = case BreakerName of
-        undefined -> undefined;
-        _ -> seki:state(BreakerName)
-    end,
-    BulkheadStatus = case BulkheadName of
-        undefined -> undefined;
-        _ -> seki_bulkhead:status(BulkheadName)
-    end,
+    BreakerState =
+        case BreakerName of
+            undefined -> undefined;
+            _ -> seki:state(BreakerName)
+        end,
+    BulkheadStatus =
+        case BulkheadName of
+            undefined -> undefined;
+            _ -> seki_bulkhead:status(BulkheadName)
+        end,
     #{name => Name, breaker => BreakerState, bulkhead => BulkheadStatus}.

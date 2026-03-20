@@ -28,6 +28,8 @@ end.
     dependency_status/1
 ]).
 
+-deprecated([{prep_stop, 0, "Shutdown is now automatic. Remove prep_stop/0 calls."}]).
+
 %% Execute through resilience stack
 -export([
     call/2,
@@ -160,13 +162,10 @@ live() ->
 %%----------------------------------------------------------------------
 
 -doc """
-Ordered graceful shutdown. Call from your app's `prep_stop/1`:
+Ordered graceful shutdown.
 
-```erlang
-prep_stop(State) ->
-    nova_resilience:prep_stop(),
-    State.
-```
+Deprecated: shutdown is now automatic via `nova_resilience_app:prep_stop/1`.
+You no longer need to call this from your app. Safe to call — it's idempotent.
 """.
 -spec prep_stop() -> ok.
 prep_stop() ->
@@ -224,11 +223,12 @@ with_breaker(DepRec, Fun, CallOpts) ->
 
 wrap_with_retry(DepRec, Fun, CallOpts) ->
     DepRetry = element(8, DepRec),
-    RetryOpts = case maps:get(retry, CallOpts, DepRetry) of
-        false -> undefined;
-        undefined -> undefined;
-        R -> R
-    end,
+    RetryOpts =
+        case maps:get(retry, CallOpts, DepRetry) of
+            false -> undefined;
+            undefined -> undefined;
+            R -> R
+        end,
     case RetryOpts of
         undefined ->
             Fun;
@@ -251,5 +251,4 @@ maybe_set_deadline(undefined) -> ok;
 maybe_set_deadline(Timeout) -> seki_deadline:set(Timeout).
 
 result_type({ok, _}) -> ok;
-result_type({error, Reason}) -> {error, Reason};
-result_type(_) -> ok.
+result_type({error, Reason}) -> {error, Reason}.
