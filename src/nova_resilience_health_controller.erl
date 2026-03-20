@@ -31,7 +31,7 @@ ready(#{method := <<"GET">>} = _Req) ->
         true ->
             {json, #{status => <<"ready">>}};
         false ->
-            {json, #{status => <<"not_ready">>}, #{status => 503}}
+            {json, 503, #{}, #{status => <<"not_ready">>}}
     end.
 
 -doc "Liveness probe. Returns 200 if the process is responsive.".
@@ -49,35 +49,35 @@ build_health_report() ->
     Deps = nova_resilience_registry:list(),
     DepStatuses = lists:foldl(
         fun(#{name := Name} = _Dep, Acc) ->
-            Status = case nova_resilience_registry:status(Name) of
-                {ok, S} -> S;
-                _ -> #{breaker => unknown, bulkhead => unknown}
-            end,
+            Status =
+                case nova_resilience_registry:status(Name) of
+                    {ok, S} -> S;
+                    _ -> #{breaker => unknown, bulkhead => unknown}
+                end,
             DepHealth = dep_health_from_check(Name, HealthResult),
             Acc#{Name => maps:merge(DepHealth, Status)}
         end,
         #{},
         Deps
     ),
-    OverallStatus = case nova_resilience_gate:is_ready() of
-        true -> <<"healthy">>;
-        false -> <<"unhealthy">>
-    end,
+    OverallStatus =
+        case nova_resilience_gate:is_ready() of
+            true -> <<"healthy">>;
+            false -> <<"unhealthy">>
+        end,
     #{
         status => OverallStatus,
         dependencies => DepStatuses,
         vm => vm_info()
     }.
 
-dep_health_from_check(Name, {_OverallHealth, Checks}) when is_map(Checks) ->
+dep_health_from_check(Name, #{checks := Checks}) ->
     case maps:get(Name, Checks, undefined) of
         {healthy, Details} -> #{status => <<"healthy">>, details => Details};
         {degraded, Details} -> #{status => <<"degraded">>, details => Details};
         {unhealthy, Details} -> #{status => <<"unhealthy">>, details => Details};
         undefined -> #{status => <<"unknown">>}
-    end;
-dep_health_from_check(_Name, _) ->
-    #{status => <<"unknown">>}.
+    end.
 
 vm_info() ->
     #{
