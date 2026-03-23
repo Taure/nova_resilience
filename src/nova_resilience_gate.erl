@@ -39,12 +39,22 @@ is_ready() ->
 -doc "Manually mark the system as ready.".
 -spec mark_ready() -> ok.
 mark_ready() ->
-    gen_server:cast(?MODULE, mark_ready).
+    gen_server:call(?MODULE, mark_ready).
 
 -doc "Mark the system as not ready (used during shutdown).".
 -spec mark_not_ready() -> ok.
 mark_not_ready() ->
-    persistent_term:put(?READY_KEY, false),
+    case persistent_term:get(?READY_KEY, false) of
+        true ->
+            persistent_term:put(?READY_KEY, false),
+            telemetry:execute(
+                [nova_resilience, gate, not_ready],
+                #{},
+                #{reason => shutdown}
+            );
+        false ->
+            ok
+    end,
     ok.
 
 %%----------------------------------------------------------------------
@@ -56,16 +66,23 @@ init([]) ->
     BootStart = erlang:monotonic_time(millisecond),
     {ok, #{boot_start => BootStart}}.
 
+handle_call(mark_ready, _From, State) ->
+    do_mark_ready(State),
+    {reply, ok, State};
 handle_call(_Msg, _From, State) ->
     {reply, {error, unknown}, State}.
 
 handle_cast(deps_provisioned, State) ->
-    CheckInterval = application:get_env(nova_resilience, gate_check_interval, 1000),
-    erlang:send_after(0, self(), check_health),
-    {noreply, State#{check_interval => CheckInterval}};
-handle_cast(mark_ready, State) ->
-    do_mark_ready(State),
-    {noreply, State};
+    case application:get_env(nova_resilience, gate_enabled, true) of
+        false ->
+            ?LOG_NOTICE(#{msg => ~"Gate disabled, marking ready immediately"}),
+            do_mark_ready(State),
+            {noreply, State};
+        true ->
+            CheckInterval = application:get_env(nova_resilience, gate_check_interval, 1000),
+            erlang:send_after(0, self(), check_health),
+            {noreply, State#{check_interval => CheckInterval}}
+    end;
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -81,14 +98,14 @@ handle_info(check_health, State) ->
             {noreply, State};
         {error, _Checks} when Elapsed >= GateTimeout ->
             ?LOG_WARNING(#{
-                msg => <<"Gate timeout reached, marking ready anyway">>,
+                msg => ~"Gate timeout reached, marking ready anyway",
                 elapsed_ms => Elapsed
             }),
             do_mark_ready(State),
             {noreply, State};
         {error, NotReady} ->
             ?LOG_INFO(#{
-                msg => <<"Waiting for critical dependencies">>,
+                msg => ~"Waiting for critical dependencies",
                 not_ready => NotReady,
                 elapsed_ms => Elapsed
             }),
@@ -118,5 +135,5 @@ do_mark_ready(State) ->
                 #{boot_time => BootTime},
                 #{}
             ),
-            ?LOG_NOTICE(#{msg => <<"System ready">>, boot_time_ms => BootTime})
+            ?LOG_NOTICE(#{msg => ~"System ready", boot_time_ms => BootTime})
     end.

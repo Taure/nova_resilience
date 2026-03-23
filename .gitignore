@@ -6,3 +6,4 @@ rebar.lock
 *.ez
 erl_crash.dump
 .rebar3/
+rebar3.crashdump

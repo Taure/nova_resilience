@@ -18,8 +18,6 @@ end.
 ```
 """.
 
--include_lib("kernel/include/logger.hrl").
-
 %% Dependency registration
 -export([
     register_dependency/2,
