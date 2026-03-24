@@ -4,21 +4,20 @@ This guide walks through adding nova_resilience to an existing Nova application.
 
 ## Installation
 
-Add `seki` and `nova_resilience` to your `rebar.config` deps:
+Add `nova_resilience` to your `rebar.config` deps:
 
 ```erlang
 {deps, [
     nova,
-    seki,
     nova_resilience
 ]}.
 ```
 
-Add them to your `.app.src` applications list:
+Add it to your `.app.src` applications list:
 
 ```erlang
 {applications, [
-    kernel, stdlib, nova, seki, nova_resilience
+    kernel, stdlib, nova, nova_resilience
 ]}.
 ```
 
