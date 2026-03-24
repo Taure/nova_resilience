@@ -48,13 +48,21 @@ init_per_testcase(_TC, Config) ->
     [{registry_pid, Pid}, {gate_pid, GatePid} | Config].
 
 end_per_testcase(_TC, Config) ->
+    %% Clean up all registered deps via the registry
+    Deps = nova_resilience_registry:list(),
+    lists:foreach(
+        fun(#{name := Name}) ->
+            nova_resilience_registry:unregister_dep(Name)
+        end,
+        Deps
+    ),
     RegistryPid = proplists:get_value(registry_pid, Config),
     GatePid = proplists:get_value(gate_pid, Config),
     unlink(RegistryPid),
     unlink(GatePid),
-    exit(RegistryPid, shutdown),
-    exit(GatePid, shutdown),
-    timer:sleep(100),
+    gen_server:stop(RegistryPid, shutdown, 5000),
+    gen_server:stop(GatePid, shutdown, 5000),
+    timer:sleep(50),
     ok.
 
 register_and_lookup_test(_Config) ->
@@ -86,8 +94,10 @@ list_deps_test(_Config) ->
 
 duplicate_register_test(_Config) ->
     ok = nova_resilience_registry:register_dep(dup_dep, #{type => custom}),
-    ?assertEqual({error, already_registered},
-                 nova_resilience_registry:register_dep(dup_dep, #{type => custom})).
+    ?assertEqual(
+        {error, already_registered},
+        nova_resilience_registry:register_dep(dup_dep, #{type => custom})
+    ).
 
 adapter_resolution_pgo_default_test(_Config) ->
     ok = nova_resilience_registry:register_dep(db_pgo, #{

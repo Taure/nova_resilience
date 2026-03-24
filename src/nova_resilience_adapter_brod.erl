@@ -11,7 +11,7 @@ Uses `brod:get_partitions_count/2` for health checks.
 #{name => kafka,
   type => kafka,
   client => my_brod_client,
-  topic => <<"events">>}
+  topic => ~"events"}
 ```
 """.
 
@@ -41,8 +41,10 @@ wrap_call(_Config, Fun) ->
 -doc "Stops the brod client if configured.".
 -spec shutdown(map()) -> ok.
 shutdown(#{client := Client}) ->
-    try brod:stop_client(Client)
-    catch _:_ -> ok
+    try
+        brod:stop_client(Client)
+    catch
+        _:_ -> ok
     end,
     ok;
 shutdown(_Config) ->

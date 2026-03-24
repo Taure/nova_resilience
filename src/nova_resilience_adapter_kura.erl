@@ -23,7 +23,7 @@ Uses `kura_repo_worker:query/3` for health checks through the kura repo layer.
 -spec health_check(map()) -> ok | {error, term()}.
 health_check(#{repo := Repo}) ->
     try
-        case kura_repo_worker:query(Repo, <<"SELECT 1">>, []) of
+        case kura_repo_worker:query(Repo, ~"SELECT 1", []) of
             {ok, _} -> ok;
             {error, Reason0} -> {error, Reason0}
         end

@@ -18,7 +18,8 @@
     call_unknown_dep_test/1,
     call_no_breaker_test/1,
     ready_not_ready_test/1,
-    ready_after_gate_test/1
+    ready_after_gate_test/1,
+    unknown_config_key_warns_test/1
 ]).
 
 all() ->
@@ -29,7 +30,8 @@ all() ->
         call_unknown_dep_test,
         call_no_breaker_test,
         ready_not_ready_test,
-        ready_after_gate_test
+        ready_after_gate_test,
+        unknown_config_key_warns_test
     ].
 
 init_per_suite(Config) ->
@@ -47,14 +49,22 @@ init_per_testcase(_TC, Config) ->
     {ok, GatePid} = nova_resilience_gate:start_link(),
     [{registry_pid, Pid}, {gate_pid, GatePid} | Config].
 
-end_per_testcase(_TC, Config) ->
-    RegistryPid = proplists:get_value(registry_pid, Config),
-    GatePid = proplists:get_value(gate_pid, Config),
-    unlink(RegistryPid),
-    unlink(GatePid),
-    exit(RegistryPid, shutdown),
-    exit(GatePid, shutdown),
-    timer:sleep(100),
+end_per_testcase(_TC, _Config) ->
+    _ =
+        try nova_resilience_registry:list() of
+            Deps ->
+                lists:foreach(
+                    fun(#{name := Name}) ->
+                        nova_resilience_registry:unregister_dep(Name)
+                    end,
+                    Deps
+                )
+        catch
+            _:_ -> ok
+        end,
+    stop_named(nova_resilience_registry),
+    stop_named(nova_resilience_gate),
+    timer:sleep(50),
     ok.
 
 call_through_breaker_test(_Config) ->
@@ -86,7 +96,8 @@ call_circuit_open_test(_Config) ->
     Result = nova_resilience:call(failing_svc, fun() -> ok end),
     case Result of
         {error, circuit_open} -> ok;
-        {ok, ok} -> ok  %% May not have tripped yet depending on window
+        %% May not have tripped yet depending on window
+        {ok, ok} -> ok
     end.
 
 call_bulkhead_full_test(_Config) ->
@@ -100,9 +111,14 @@ call_bulkhead_full_test(_Config) ->
     Pid = spawn(fun() ->
         seki_bulkhead:acquire(nova_res_bulkhead_limited_svc),
         Self ! acquired,
-        receive release -> ok end
+        receive
+            release -> ok
+        end
     end),
-    receive acquired -> ok after 1000 -> ct:fail(timeout) end,
+    receive
+        acquired -> ok
+    after 1000 -> ct:fail(timeout)
+    end,
     %% Now our call should fail with bulkhead_full
     Result = nova_resilience:call(limited_svc, fun() -> ok end),
     ?assertEqual({error, bulkhead_full}, Result),
@@ -123,3 +139,31 @@ ready_not_ready_test(_Config) ->
 ready_after_gate_test(_Config) ->
     nova_resilience_gate:mark_ready(),
     ?assertEqual(ok, nova_resilience:ready()).
+
+unknown_config_key_warns_test(_Config) ->
+    %% Stop current registry/gate to restart with bad config
+    stop_named(nova_resilience_registry),
+    stop_named(nova_resilience_gate),
+    timer:sleep(50),
+    %% Set an unknown key
+    application:set_env(nova_resilience, dependecies_typo, []),
+    %% Restart — should log warning but not crash
+    {ok, _} = nova_resilience_registry:start_link(),
+    {ok, _} = nova_resilience_gate:start_link(),
+    %% Verify it started successfully
+    ?assertEqual([], nova_resilience_registry:list()),
+    %% Clean up
+    application:unset_env(nova_resilience, dependecies_typo).
+
+%%----------------------------------------------------------------------
+%% Helpers
+%%----------------------------------------------------------------------
+
+stop_named(Name) ->
+    case whereis(Name) of
+        undefined ->
+            ok;
+        Pid ->
+            unlink(Pid),
+            gen_server:stop(Pid, shutdown, 5000)
+    end.

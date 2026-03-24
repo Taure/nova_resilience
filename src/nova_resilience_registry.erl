@@ -89,11 +89,17 @@ init([]) ->
                 ets:delete_all_objects(Tid),
                 Tid
         end,
+    warn_unknown_config_keys(),
     Deps = application:get_env(nova_resilience, dependencies, []),
     VmChecks = application:get_env(nova_resilience, vm_checks, true),
     Interval = application:get_env(nova_resilience, health_check_interval, 10000),
     %% Clean up any existing health process from previous run
-    catch seki:delete_health(?HEALTH_NAME),
+    _ =
+        try
+            seki:delete_health(?HEALTH_NAME)
+        catch
+            _:_ -> ok
+        end,
     {ok, _} = seki:new_health(?HEALTH_NAME, #{
         vm_checks => VmChecks,
         check_interval => Interval
@@ -103,7 +109,7 @@ init([]) ->
             nova_resilience_gate:deps_provisioned(),
             {ok, #{table => Table}};
         {error, Reasons} ->
-            ?LOG_ERROR(#{msg => <<"Invalid dependency config">>, errors => Reasons}),
+            ?LOG_ERROR(#{msg => ~"Invalid dependency config", errors => Reasons}),
             {stop, {invalid_config, Reasons}}
     end.
 
@@ -155,7 +161,7 @@ validate_and_provision_all(Deps) ->
     ),
     case Errors of
         [] ->
-            lists:foreach(fun(Config) -> provision_dep(Config) end, Deps),
+            lists:foreach(fun provision_dep/1, Deps),
             ok;
         _ ->
             {error, Errors}
@@ -196,7 +202,7 @@ provision_dep(Config) ->
         #{name => Name, type => Type}
     ),
 
-    ?LOG_NOTICE(#{msg => <<"Dependency registered">>, name => Name, type => Type}),
+    ?LOG_NOTICE(#{msg => ~"Dependency registered", name => Name, type => Type}),
     ok.
 
 provision_breaker(Name, Config) ->
@@ -298,9 +304,11 @@ adapter_module(brod) -> nova_resilience_adapter_brod;
 adapter_module(Module) -> Module.
 
 breaker_name(DepName) ->
+    % elp:ignore W0023 — bounded set: one atom per configured dependency
     list_to_atom("nova_res_breaker_" ++ atom_to_list(DepName)).
 
 bulkhead_name(DepName) ->
+    % elp:ignore W0023 — bounded set: one atom per configured dependency
     list_to_atom("nova_res_bulkhead_" ++ atom_to_list(DepName)).
 
 dep_to_map(#dep{
@@ -323,3 +331,33 @@ build_status(#dep{name = Name, breaker_name = BreakerName, bulkhead_name = Bulkh
             _ -> seki_bulkhead:status(BulkheadName)
         end,
     #{name => Name, breaker => BreakerState, bulkhead => BulkheadStatus}.
+
+-define(KNOWN_KEYS, [
+    dependencies,
+    health_check_interval,
+    vm_checks,
+    gate_enabled,
+    gate_timeout,
+    gate_check_interval,
+    shutdown_delay,
+    shutdown_drain_timeout,
+    drain_poll_interval,
+    health_prefix,
+    health_severity
+]).
+
+warn_unknown_config_keys() ->
+    AllEnv = application:get_all_env(nova_resilience),
+    %% Filter out OTP-internal keys
+    AppKeys = [K || {K, _V} <- AllEnv, K =/= included_applications],
+    Unknown = [K || K <- AppKeys, not lists:member(K, ?KNOWN_KEYS)],
+    case Unknown of
+        [] ->
+            ok;
+        _ ->
+            ?LOG_WARNING(#{
+                msg => ~"Unknown nova_resilience config keys",
+                unknown_keys => Unknown,
+                known_keys => ?KNOWN_KEYS
+            })
+    end.

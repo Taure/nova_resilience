@@ -39,12 +39,12 @@ do_execute() ->
         [nova_resilience, shutdown, start], #{system_time => erlang:system_time(millisecond)}, #{}
     ),
 
-    ?LOG_NOTICE(#{msg => <<"Resilience shutdown started">>}),
+    ?LOG_NOTICE(#{msg => ~"Resilience shutdown started"}),
 
     nova_resilience_gate:mark_not_ready(),
 
     Delay = application:get_env(nova_resilience, shutdown_delay, 5000),
-    ?LOG_NOTICE(#{msg => <<"Waiting for traffic drain">>, delay_ms => Delay}),
+    ?LOG_NOTICE(#{msg => ~"Waiting for traffic drain", delay_ms => Delay}),
     timer:sleep(Delay),
 
     DrainTimeout = application:get_env(nova_resilience, shutdown_drain_timeout, 15000),
@@ -52,7 +52,7 @@ do_execute() ->
 
     Duration = erlang:monotonic_time(millisecond) - Start,
     telemetry:execute([nova_resilience, shutdown, stop], #{duration => Duration}, #{}),
-    ?LOG_NOTICE(#{msg => <<"Resilience shutdown complete">>, duration_ms => Duration}),
+    ?LOG_NOTICE(#{msg => ~"Resilience shutdown complete", duration_ms => Duration}),
     ok.
 
 %%----------------------------------------------------------------------
@@ -76,7 +76,7 @@ shutdown_by_priority(DrainTimeout) ->
             Group = maps:get(Prio, Grouped),
             Names = [element(2, D) || D <- Group],
             ?LOG_NOTICE(#{
-                msg => <<"Shutting down priority group">>, priority => Prio, deps => Names
+                msg => ~"Shutting down priority group", priority => Prio, deps => Names
             }),
             shutdown_group(Group, DrainTimeout)
         end,
@@ -84,22 +84,22 @@ shutdown_by_priority(DrainTimeout) ->
     ).
 
 shutdown_group(Deps, DrainTimeout) ->
-    %% Close bulkheads first to reject new work
+    %% Wait for in-flight requests to drain (checks bulkhead occupancy)
+    drain_inflight(DrainTimeout, Deps),
+
+    %% Delete bulkheads now that in-flight work has drained
     lists:foreach(
         fun(Dep) ->
             case element(7, Dep) of
                 undefined ->
                     ok;
                 BulkheadName ->
-                    ?LOG_INFO(#{msg => <<"Closing bulkhead">>, name => element(2, Dep)}),
+                    ?LOG_INFO(#{msg => ~"Deleting bulkhead", name => element(2, Dep)}),
                     _ = seki:delete_bulkhead(BulkheadName)
             end
         end,
         Deps
     ),
-
-    %% Wait for in-flight to drain
-    drain_inflight(DrainTimeout),
 
     %% Delete breakers and run adapter shutdown
     lists:foreach(
@@ -110,7 +110,7 @@ shutdown_group(Deps, DrainTimeout) ->
                     undefined ->
                         ok;
                     BreakerName ->
-                        ?LOG_INFO(#{msg => <<"Deleting breaker">>, name => Name}),
+                        ?LOG_INFO(#{msg => ~"Deleting breaker", name => Name}),
                         seki:delete_breaker(BreakerName)
                 end,
             Adapter = element(4, Dep),
@@ -124,7 +124,7 @@ shutdown_group(Deps, DrainTimeout) ->
                     catch
                         C:R ->
                             ?LOG_WARNING(#{
-                                msg => <<"Adapter shutdown error">>,
+                                msg => ~"Adapter shutdown error",
                                 name => Name,
                                 class => C,
                                 reason => R
@@ -137,17 +137,42 @@ shutdown_group(Deps, DrainTimeout) ->
         Deps
     ).
 
-drain_inflight(Timeout) ->
+drain_inflight(Timeout, Deps) ->
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
-    drain_loop(Deadline).
+    BulkheadNames = [element(7, D) || D <- Deps, element(7, D) =/= undefined],
+    PollInterval = application:get_env(nova_resilience, drain_poll_interval, 100),
+    drain_loop(Deadline, BulkheadNames, PollInterval).
 
-drain_loop(Deadline) ->
+drain_loop(Deadline, BulkheadNames, PollInterval) ->
     Now = erlang:monotonic_time(millisecond),
     case Now >= Deadline of
         true ->
-            ?LOG_WARNING(#{msg => <<"Drain timeout reached">>}),
+            ?LOG_WARNING(#{msg => ~"Drain timeout reached"}),
             ok;
         false ->
-            timer:sleep(500),
-            ok
+            case all_bulkheads_idle(BulkheadNames) of
+                true ->
+                    ?LOG_INFO(#{msg => ~"All in-flight requests drained"}),
+                    ok;
+                false ->
+                    timer:sleep(PollInterval),
+                    drain_loop(Deadline, BulkheadNames, PollInterval)
+            end
     end.
+
+all_bulkheads_idle([]) ->
+    true;
+all_bulkheads_idle(BulkheadNames) ->
+    lists:all(
+        fun(Name) ->
+            try
+                case seki_bulkhead:status(Name) of
+                    #{current := 0} -> true;
+                    _ -> false
+                end
+            catch
+                _:_ -> true
+            end
+        end,
+        BulkheadNames
+    ).

@@ -16,27 +16,32 @@ Registered automatically when `nova_resilience` is included in `nova_apps`.
 -define(HEALTH_NAME, nova_resilience_health).
 
 -doc "Full health report with dependency status and VM info.".
-health(#{method := <<"GET">>} = _Req) ->
+health(#{method := ~"GET"} = _Req) ->
     Report = build_health_report(),
     telemetry:execute(
         [nova_resilience, health, check],
         #{check_count => map_size(maps:get(dependencies, Report, #{}))},
         Report
     ),
-    {json, Report}.
+    case application:get_env(nova_resilience, health_severity, info) of
+        critical when map_get(status, Report) =:= ~"unhealthy" ->
+            {json, 503, #{}, Report};
+        _ ->
+            {json, Report}
+    end.
 
 -doc "Readiness probe. Returns 200 when ready, 503 otherwise.".
-ready(#{method := <<"GET">>} = _Req) ->
+ready(#{method := ~"GET"} = _Req) ->
     case nova_resilience_gate:is_ready() of
         true ->
-            {json, #{status => <<"ready">>}};
+            {json, #{status => ~"ready"}};
         false ->
-            {json, 503, #{}, #{status => <<"not_ready">>}}
+            {json, 503, #{}, #{status => ~"not_ready"}}
     end.
 
 -doc "Liveness probe. Returns 200 if the process is responsive.".
-live(#{method := <<"GET">>} = _Req) ->
-    {json, #{status => <<"alive">>}}.
+live(#{method := ~"GET"} = _Req) ->
+    {json, #{status => ~"alive"}}.
 
 %%----------------------------------------------------------------------
 %% Internal
@@ -62,8 +67,8 @@ build_health_report() ->
     ),
     OverallStatus =
         case nova_resilience_gate:is_ready() of
-            true -> <<"healthy">>;
-            false -> <<"unhealthy">>
+            true -> ~"healthy";
+            false -> ~"unhealthy"
         end,
     #{
         status => OverallStatus,
@@ -73,15 +78,18 @@ build_health_report() ->
 
 dep_health_from_check(Name, #{checks := Checks}) ->
     case maps:get(Name, Checks, undefined) of
-        {healthy, Details} -> #{status => <<"healthy">>, details => Details};
-        {degraded, Details} -> #{status => <<"degraded">>, details => Details};
-        {unhealthy, Details} -> #{status => <<"unhealthy">>, details => Details};
-        undefined -> #{status => <<"unknown">>}
+        {healthy, Details} -> #{status => ~"healthy", details => Details};
+        {degraded, Details} -> #{status => ~"degraded", details => Details};
+        {unhealthy, Details} -> #{status => ~"unhealthy", details => Details};
+        undefined -> #{status => ~"unknown"}
     end.
 
 vm_info() ->
+    {UpSecs, _} = erlang:statistics(wall_clock),
     #{
         memory_mb => erlang:memory(total) div (1024 * 1024),
         process_count => erlang:system_info(process_count),
-        run_queue => erlang:statistics(run_queue)
+        run_queue => erlang:statistics(run_queue),
+        uptime_seconds => UpSecs div 1000,
+        node => atom_to_binary(node())
     }.

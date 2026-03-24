@@ -41,7 +41,7 @@ shutdown(_Config) ->
 
 do_check(Opts) ->
     try
-        case pgo:query(<<"SELECT 1">>, [], Opts) of
+        case pgo:query(~"SELECT 1", [], Opts) of
             #{command := select} -> ok;
             {error, Reason0} -> {error, Reason0}
         end
