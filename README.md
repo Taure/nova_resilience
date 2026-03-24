@@ -23,7 +23,6 @@ Add to your deps:
 ```erlang
 {deps, [
     nova,
-    seki,
     nova_resilience
 ]}.
 ```
@@ -31,7 +30,7 @@ Add to your deps:
 Add to your `.app.src` applications:
 
 ```erlang
-{applications, [kernel, stdlib, nova, seki, nova_resilience]}.
+{applications, [kernel, stdlib, nova, nova_resilience]}.
 ```
 
 Register health routes in your Nova config:
