@@ -6,9 +6,13 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/erlang-ci.yml@v1
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      enable-audit: true
+      enable-summary: true
+    secrets: inherit
