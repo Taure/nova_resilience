@@ -13,6 +13,6 @@ jobs:
       contents: write
       pull-requests: write
     with:
-      enable-audit: true
+      enable-audit: false
       enable-summary: true
     secrets: inherit
