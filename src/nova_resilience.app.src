@@ -7,5 +7,5 @@
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, [{"GitHub", "https://github.com/Taure/nova_resilience"}]}
+    {links, [{"GitHub", "https://github.com/novaframework/nova_resilience"}]}
 ]}.
